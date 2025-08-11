@@ -29,6 +29,7 @@ type Pfcp struct {
 	NodeID         string        `yaml:"nodeID"         valid:"required,host"`
 	RetransTimeout time.Duration `yaml:"retransTimeout" valid:"required"`
 	MaxRetrans     uint8         `yaml:"maxRetrans"     valid:"optional"`
+	IfName         string        `yaml:"ifname"         valid:"optional"`
 }
 
 type Gtpu struct {

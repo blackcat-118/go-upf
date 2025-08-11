@@ -61,8 +61,22 @@ type PfcpServer struct {
 	log          *logrus.Entry
 }
 
+func getInterfaceIP(interfaceName string) string {
+	iface, _ := net.InterfaceByName(interfaceName)
+	addrs, _ := iface.Addrs()
+	for _, addr := range addrs {
+		ipNet, ok := addr.(*net.IPNet)
+		if ok && !ipNet.IP.IsLoopback() && ipNet.IP.To4() != nil {
+			return ipNet.IP.String()
+		}
+	}
+	return ""
+}
+
 func NewPfcpServer(cfg *factory.Config, driver forwarder.Driver) *PfcpServer {
-	listen := fmt.Sprintf("%s:%d", cfg.Pfcp.Addr, factory.UpfPfcpDefaultPort)
+	// search for pfcp interface address instead of using config.Pfcp.Addr
+	pfcpAddr := getInterfaceIP(cfg.Pfcp.IfName)
+	listen := fmt.Sprintf("%s:%d", pfcpAddr, factory.UpfPfcpDefaultPort)
 	return &PfcpServer{
 		cfg:          cfg,
 		listen:       listen,

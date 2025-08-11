@@ -40,6 +40,18 @@ type Driver interface {
 	HandleReport(report.Handler)
 }
 
+func getInterfaceIP(interfaceName string) string {
+	iface, _ := net.InterfaceByName(interfaceName)
+	addrs, _ := iface.Addrs()
+	for _, addr := range addrs {
+		ipNet, ok := addr.(*net.IPNet)
+		if ok && !ipNet.IP.IsLoopback() && ipNet.IP.To4() != nil {
+			return ipNet.IP.String()
+		}
+	}
+	return ""
+}
+
 func NewDriver(wg *sync.WaitGroup, cfg *factory.Config) (Driver, error) {
 	cfgGtpu := cfg.Gtpu
 	if cfgGtpu == nil {
@@ -52,7 +64,9 @@ func NewDriver(wg *sync.WaitGroup, cfg *factory.Config) (Driver, error) {
 		var mtu uint32
 		for _, ifInfo := range cfgGtpu.IfList {
 			mtu = ifInfo.MTU
-			gtpuAddr = fmt.Sprintf("%s:%d", ifInfo.Addr, factory.UpfGtpDefaultPort)
+			// search for GTP address
+			gtpuIp := getInterfaceIP(ifInfo.IfName)
+			gtpuAddr = fmt.Sprintf("%s:%d", gtpuIp, factory.UpfGtpDefaultPort)
 			logger.MainLog.Infof("GTP Address: %q", gtpuAddr)
 			break
 		}
