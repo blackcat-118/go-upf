@@ -80,7 +80,7 @@ func NewPfcpServer(cfg *factory.Config, driver forwarder.Driver) *PfcpServer {
 	return &PfcpServer{
 		cfg:          cfg,
 		listen:       listen,
-		nodeID:       cfg.Pfcp.NodeID,
+		nodeID:       pfcpAddr, // use IP as NodeID instead of config.Pfcp.NodeID
 		rcvCh:        make(chan ReceivePacket, RECEIVE_CHANNEL_LEN),
 		srCh:         make(chan report.SessReport, REPORT_CHANNEL_LEN),
 		trToCh:       make(chan TransactionTimeout, TRANS_TIMEOUT_CHANNEL_LEN),
