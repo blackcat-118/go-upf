@@ -90,6 +90,10 @@ func (u *UpfApp) Run() error {
 
 	// Receive the interrupt signal
 	logger.MainLog.Infof("Shutdown UPF ...")
+	// Notify the PFCP server to stop
+	if u.pfcpServer != nil {
+		u.pfcpServer.Stop()
+	}
 	// Notify each goroutine and wait them stopped
 	cancel()
 	u.WaitRoutineStopped()

@@ -239,11 +239,30 @@ func (s *PfcpServer) Start(wg *sync.WaitGroup) {
 
 func (s *PfcpServer) Stop() {
 	s.log.Infoln("Stopping pfcp server")
+	// pfcp association release
+	for _, node := range s.rnodes {
+		s.log.Infof("release node: %#+v\n", node)
+		s.pfcpRelease(node)
+	}
 	if s.conn != nil {
 		err := s.conn.Close()
 		if err != nil {
 			s.log.Errorf("Stop pfcp server err: %+v", err)
 		}
+	}
+}
+
+func (s *PfcpServer) pfcpRelease(rnode *RemoteNode) {
+	s.log.Infoln("pfcpRelease")
+	// send AssociationReleaseRequest to all remote nodes
+	req := message.NewAssociationReleaseRequest(
+		1,
+		newIeNodeID(s.nodeID),
+	)
+	err := s.sendReqTo(req, rnode.addr)
+	if err != nil {
+		s.log.Errorf("pfcpRelease sendReqTo err: %+v", err)
+		return
 	}
 }
 
