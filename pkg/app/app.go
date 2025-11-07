@@ -2,6 +2,10 @@ package app
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"runtime/debug"
@@ -16,6 +20,8 @@ import (
 	"github.com/free5gc/go-upf/pkg/factory"
 )
 
+var UPF *UpfApp
+
 type UpfApp struct {
 	ctx        context.Context
 	wg         sync.WaitGroup
@@ -24,13 +30,42 @@ type UpfApp struct {
 	pfcpServer *pfcp.PfcpServer
 }
 
+// UpfMetrics contains the structure for the JSON response.
+type UpfMetrics struct {
+	SessionCount int    `json:"session_count"`
+	N4IP         string `json:"n4_ip"`
+}
+
+func GetApp() *UpfApp {
+	return UPF
+}
+
+func upfMetricsHandler(w http.ResponseWriter, r *http.Request) {
+	pfcpServer := GetApp().GetPfcpServer()
+
+	// Prepare the response
+	metrics := UpfMetrics{
+		SessionCount: pfcpServer.GetSessionCount(),
+		N4IP:         pfcpServer.GetLocalIP(),
+	}
+
+	// Write response as JSON
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(metrics)
+}
+
 func NewApp(cfg *factory.Config) (*UpfApp, error) {
 	upf := &UpfApp{
 		cfg: cfg,
 	}
 	upf.SetLogLevel(cfg.Logger.Level)
 	upf.SetLogReportCaller(cfg.Logger.ReportCaller)
+	UPF = upf
 	return upf, nil
+}
+
+func (u *UpfApp) GetPfcpServer() *pfcp.PfcpServer {
+	return u.pfcpServer
 }
 
 func (u *UpfApp) Config() *factory.Config {
@@ -80,6 +115,19 @@ func (u *UpfApp) Run() error {
 	u.pfcpServer = pfcp.NewPfcpServer(u.cfg, u.driver)
 	u.driver.HandleReport(u.pfcpServer)
 	u.pfcpServer.Start(&u.wg)
+
+	// Start HTTP server for metrics
+	httpPort := "80"
+	http.HandleFunc("/upf-metrics", upfMetricsHandler)
+
+	u.wg.Add(1)
+	// Start the HTTP server
+	go func() {
+		fmt.Printf("HTTP server running on port %s\n", httpPort)
+		if err := http.ListenAndServe(":"+httpPort, nil); err != nil {
+			log.Fatalf("Failed to start HTTP server: %v", err)
+		}
+	}()
 
 	logger.MainLog.Infoln("UPF started")
 

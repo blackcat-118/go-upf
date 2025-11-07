@@ -199,6 +199,18 @@ func (s *PfcpServer) main(wg *sync.WaitGroup) {
 	}
 }
 
+func (s *PfcpServer) GetSessionCount() int {
+	sessionCount := 0
+	for _, node := range s.rnodes {
+		sessionCount += len(node.sess)
+	}
+	return sessionCount
+}
+
+func (s *PfcpServer) GetLocalIP() string {
+	return s.nodeID
+}
+
 func (s *PfcpServer) receiver(wg *sync.WaitGroup) {
 	defer func() {
 		if p := recover(); p != nil {
