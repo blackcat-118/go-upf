@@ -81,10 +81,12 @@ func (tx *TxTransaction) recv(rsp message.Message) message.Message {
 	tx.log.Debugf("recv rsp, delete txtr")
 
 	// Stop tx retransmission timer
-	tx.timer.Stop()
+	if tx.timer != nil {
+		tx.timer.Stop()
+	}
 	tx.timer = nil
 
-	delete(tx.server.txTrans, tx.id)
+	tx.server.txTrans.Delete(tx.id)
 	return tx.req
 }
 
@@ -100,7 +102,7 @@ func (tx *TxTransaction) handleTimeout() {
 		tx.timer = tx.startTimer()
 	} else {
 		tx.log.Debugf("max retransmission reached - delete txtr")
-		delete(tx.server.txTrans, tx.id)
+		tx.server.txTrans.Delete(tx.id)
 		err := tx.server.txtoDispacher(tx.req, tx.raddr)
 		if err != nil {
 			tx.log.Errorf("txtoDispacher: %v", err)
@@ -178,7 +180,7 @@ func (rx *RxTransaction) recv(req message.Message, rxTrFound bool) (bool, error)
 
 func (rx *RxTransaction) handleTimeout() {
 	rx.log.Debugf("timeout, delete rxtr")
-	delete(rx.server.rxTrans, rx.id)
+	rx.server.rxTrans.Delete(rx.id)
 }
 
 func (rx *RxTransaction) startTimer() *time.Timer {

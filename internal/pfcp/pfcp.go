@@ -43,6 +43,14 @@ type TransactionTimeout struct {
 	TrID   string
 }
 
+type TxTransMap struct {
+	m sync.Map // underlying map
+}
+
+type RxTransMap struct {
+	m sync.Map // underlying map
+}
+
 type PfcpServer struct {
 	cfg          *factory.Config
 	listen       string
@@ -55,10 +63,54 @@ type PfcpServer struct {
 	driver       forwarder.Driver
 	lnode        LocalNode
 	rnodes       map[string]*RemoteNode
-	txTrans      map[string]*TxTransaction // key: RemoteAddr-Sequence
-	rxTrans      map[string]*RxTransaction // key: RemoteAddr-Sequence
+	txTrans      TxTransMap // map[string]*TxTransaction
+	rxTrans      RxTransMap // map[string]*RxTransaction
 	txSeq        uint32
 	log          *logrus.Entry
+}
+
+func (tm *TxTransMap) Load(key string) (*TxTransaction, bool) {
+	v, ok := tm.m.Load(key)
+	if !ok {
+		return nil, false
+	}
+	return v.(*TxTransaction), true
+}
+
+func (tm *TxTransMap) Store(key string, val *TxTransaction) {
+	tm.m.Store(key, val)
+}
+
+func (tm *TxTransMap) Delete(key string) {
+	tm.m.Delete(key)
+}
+
+func (tm *TxTransMap) Range(f func(key string, val *TxTransaction) bool) {
+	tm.m.Range(func(k, v any) bool {
+		return f(k.(string), v.(*TxTransaction))
+	})
+}
+
+func (tm *RxTransMap) Load(key string) (*RxTransaction, bool) {
+	v, ok := tm.m.Load(key)
+	if !ok {
+		return nil, false
+	}
+	return v.(*RxTransaction), true
+}
+
+func (tm *RxTransMap) Store(key string, val *RxTransaction) {
+	tm.m.Store(key, val)
+}
+
+func (tm *RxTransMap) Delete(key string) {
+	tm.m.Delete(key)
+}
+
+func (tm *RxTransMap) Range(f func(key string, val *RxTransaction) bool) {
+	tm.m.Range(func(k, v any) bool {
+		return f(k.(string), v.(*RxTransaction))
+	})
 }
 
 func getInterfaceIP(interfaceName string) string {
@@ -87,8 +139,8 @@ func NewPfcpServer(cfg *factory.Config, driver forwarder.Driver) *PfcpServer {
 		recoveryTime: time.Now(),
 		driver:       driver,
 		rnodes:       make(map[string]*RemoteNode),
-		txTrans:      make(map[string]*TxTransaction),
-		rxTrans:      make(map[string]*RxTransaction),
+		txTrans:      TxTransMap{},
+		rxTrans:      RxTransMap{},
 		log:          logger.PfcpLog.WithField(logger_util.FieldListenAddr, listen),
 	}
 }
@@ -128,8 +180,9 @@ func (s *PfcpServer) main(wg *sync.WaitGroup) {
 	for {
 		select {
 		case sr := <-s.srCh:
-			s.log.Tracef("receive SessReport from srCh")
-			s.ServeReport(&sr)
+			go func(sr report.SessReport) { // non-blocking
+				s.ServeReport(&sr)
+			}(sr)
 		case rcvPkt := <-s.rcvCh:
 			s.log.Tracef("receive buf(len=%d) from rcvCh", len(rcvPkt.Buf))
 			if len(rcvPkt.Buf) == 0 {
@@ -143,58 +196,59 @@ func (s *PfcpServer) main(wg *sync.WaitGroup) {
 				continue
 			}
 
-			trID := fmt.Sprintf("%s-%d", rcvPkt.RemoteAddr, msg.Sequence())
-			if isRequest(msg) {
-				s.log.Tracef("receive req pkt from %s", trID)
-				rx, ok := s.rxTrans[trID]
-				if !ok {
-					rx = NewRxTransaction(s, rcvPkt.RemoteAddr, msg.Sequence())
-					s.rxTrans[trID] = rx
+			go func(rcvPkt ReceivePacket, msg message.Message) {
+				trID := fmt.Sprintf("%s-%d", rcvPkt.RemoteAddr, msg.Sequence())
+				if isRequest(msg) {
+					s.log.Tracef("receive req pkt from %s", trID)
+					rx, ok := s.rxTrans.Load(trID)
+					if !ok {
+						rx = NewRxTransaction(s, rcvPkt.RemoteAddr, msg.Sequence())
+						s.rxTrans.Store(trID, rx)
+					}
+					needDispatch, err1 := rx.recv(msg, ok)
+					if err1 != nil {
+						s.log.Warnf("rcvCh: %v", err1)
+						return
+					}
+					if !needDispatch {
+						s.log.Debugf("rcvCh: rxtr[%s] req no need to dispatch", trID)
+						return
+					}
+					if err := s.reqDispacher(msg, rcvPkt.RemoteAddr); err != nil {
+						s.log.Errorln(err)
+						s.log.Tracef("ignored undecodable message:\n%+v", hex.Dump(rcvPkt.Buf))
+					}
+					s.log.Tracef("completed request dispatch")
+				} else if isResponse(msg) {
+					tx, ok := s.txTrans.Load(trID)
+					if !ok {
+						s.log.Debugf("rcvCh: No txtr[%s] found for rsp", trID)
+						return
+					}
+					req := tx.recv(msg)
+					if err := s.rspDispacher(msg, rcvPkt.RemoteAddr, req); err != nil {
+						s.log.Errorln(err)
+						s.log.Tracef("ignored undecodable message:\n%+v", hex.Dump(rcvPkt.Buf))
+					}
 				}
-				needDispatch, err1 := rx.recv(msg, ok)
-				if err1 != nil {
-					s.log.Warnf("rcvCh: %v", err1)
-					continue
-				} else if !needDispatch {
-					s.log.Debugf("rcvCh: rxtr[%s] req no need to dispatch", trID)
-					continue
-				}
-				err = s.reqDispacher(msg, rcvPkt.RemoteAddr)
-				if err != nil {
-					s.log.Errorln(err)
-					s.log.Tracef("ignored undecodable message:\n%+v", hex.Dump(rcvPkt.Buf))
-				}
-			} else if isResponse(msg) {
-				s.log.Tracef("receive rsp pkt from %s", trID)
-				tx, ok := s.txTrans[trID]
-				if !ok {
-					s.log.Debugf("rcvCh: No txtr[%s] found for rsp", trID)
-					continue
-				}
-				req := tx.recv(msg)
-				err = s.rspDispacher(msg, rcvPkt.RemoteAddr, req)
-				if err != nil {
-					s.log.Errorln(err)
-					s.log.Tracef("ignored undecodable message:\n%+v", hex.Dump(rcvPkt.Buf))
-				}
-			}
+			}(rcvPkt, msg)
 		case trTo := <-s.trToCh:
 			s.log.Tracef("receive tr timeout (%v) from trToCh", trTo)
-			if trTo.TrType == TX {
-				tx, ok := s.txTrans[trTo.TrID]
-				if !ok {
-					s.log.Warnf("trToCh: txtr[%s] not found", trTo.TrID)
-					continue
+			go func(trTo TransactionTimeout) {
+				if trTo.TrType == TX {
+					if tx, ok := s.txTrans.Load(trTo.TrID); ok {
+						tx.handleTimeout()
+					} else {
+						s.log.Warnf("trToCh: txtr[%s] not found", trTo.TrID)
+					}
+				} else {
+					if rx, ok := s.rxTrans.Load(trTo.TrID); ok {
+						rx.handleTimeout()
+					} else {
+						s.log.Warnf("trToCh: rxtr[%s] not found", trTo.TrID)
+					}
 				}
-				tx.handleTimeout()
-			} else { // RX
-				rx, ok := s.rxTrans[trTo.TrID]
-				if !ok {
-					s.log.Warnf("trToCh: rxtr[%s] not found", trTo.TrID)
-					continue
-				}
-				rx.handleTimeout()
-			}
+			}(trTo)
 		}
 	}
 }
@@ -319,10 +373,10 @@ func (s *PfcpServer) sendReqTo(msg message.Message, addr net.Addr) error {
 	if !isRequest(msg) {
 		return errors.Errorf("sendReqTo: invalid req type(%d)", msg.MessageType())
 	}
-
 	txtr := NewTxTransaction(s, addr, s.txSeq)
 	s.txSeq++
-	s.txTrans[txtr.id] = txtr
+
+	s.txTrans.Store(txtr.id, txtr)
 
 	return txtr.send(msg)
 }
@@ -334,7 +388,7 @@ func (s *PfcpServer) sendRspTo(msg message.Message, addr net.Addr) error {
 
 	// find transaction
 	trID := fmt.Sprintf("%s-%d", addr, msg.Sequence())
-	rxtr, ok := s.rxTrans[trID]
+	rxtr, ok := s.rxTrans.Load(trID)
 	if !ok {
 		return errors.Errorf("sendRspTo: rxtr(%s) not found", trID)
 	}
@@ -343,20 +397,20 @@ func (s *PfcpServer) sendRspTo(msg message.Message, addr net.Addr) error {
 }
 
 func (s *PfcpServer) stopTrTimers() {
-	for _, tx := range s.txTrans {
-		if tx.timer == nil {
-			continue
+	s.txTrans.Range(func(key string, tx *TxTransaction) bool {
+		if tx.timer != nil {
+			tx.timer.Stop()
+			tx.timer = nil
 		}
-		tx.timer.Stop()
-		tx.timer = nil
-	}
-	for _, rx := range s.rxTrans {
-		if rx.timer == nil {
-			continue
+		return true
+	})
+	s.rxTrans.Range(func(key string, rx *RxTransaction) bool {
+		if rx.timer != nil {
+			rx.timer.Stop()
+			rx.timer = nil
 		}
-		rx.timer.Stop()
-		rx.timer = nil
-	}
+		return true
+	})
 }
 
 func isRequest(msg message.Message) bool {
