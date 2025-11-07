@@ -6,6 +6,7 @@ import (
 	"net"
 	"runtime/debug"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pkg/errors"
@@ -373,8 +374,8 @@ func (s *PfcpServer) sendReqTo(msg message.Message, addr net.Addr) error {
 	if !isRequest(msg) {
 		return errors.Errorf("sendReqTo: invalid req type(%d)", msg.MessageType())
 	}
-	txtr := NewTxTransaction(s, addr, s.txSeq)
-	s.txSeq++
+	seq := atomic.AddUint32(&s.txSeq, 1)
+	txtr := NewTxTransaction(s, addr, seq)
 
 	s.txTrans.Store(txtr.id, txtr)
 
